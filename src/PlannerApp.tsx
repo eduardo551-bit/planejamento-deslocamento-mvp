@@ -9,12 +9,22 @@ import * as XLSX from 'xlsx'
 // ─── Types ───────────────────────────────────────────────────────────────────
 
 type AllocationMode = 'distance' | 'balanced' | 'capacity'
-type AppView = 'operation' | 'quality'
+type AppView = 'operation' | 'analysis' | 'quality'
 type RouteSource = 'osrm' | 'estimate'
 type SortField = 'description' | 'baseName' | 'distanceKm' | 'durationMin'
 type SortDir = 'asc' | 'desc'
 type SourceFilter = 'all' | 'osrm' | 'estimate'
 type TrafficScenario = 'free' | 'normal' | 'morning_peak' | 'evening_peak' | 'severe'
+type TimeWindow = 'early' | 'morning' | 'business' | 'lunch' | 'afternoon' | 'evening' | 'night'
+
+type MapLayers = {
+  services: boolean
+  bases: boolean
+  outliers: boolean
+  longServices: boolean
+  saturatedBases: boolean
+  heatmap: boolean
+}
 
 type ServiceRow = {
   id: number
@@ -105,6 +115,25 @@ const TRAFFIC_SCENARIOS: Record<TrafficScenario, { label: string; factor: number
   severe: { label: 'Trânsito severo', factor: 1.7, detail: 'tempo OSRM +70%' },
 }
 
+const TIME_WINDOWS: Record<TimeWindow, { label: string; factor: number; detail: string }> = {
+  early: { label: '06h - antes do pico', factor: 0.95, detail: 'saída antecipada' },
+  morning: { label: '07h-09h - pico manhã', factor: 1.25, detail: 'maior pressão de entrada' },
+  business: { label: '09h-11h - comercial', factor: 1, detail: 'referência operacional' },
+  lunch: { label: '11h-14h - almoço', factor: 1.08, detail: 'tráfego intermediário' },
+  afternoon: { label: '14h-17h - tarde', factor: 1.05, detail: 'fluxo moderado' },
+  evening: { label: '17h-19h - pico tarde', factor: 1.35, detail: 'maior pressão de retorno' },
+  night: { label: '20h+ - noite', factor: 0.88, detail: 'menor fluxo viário' },
+}
+
+const DEFAULT_MAP_LAYERS: MapLayers = {
+  services: true,
+  bases: true,
+  outliers: false,
+  longServices: false,
+  saturatedBases: false,
+  heatmap: false,
+}
+
 // ─── Component ───────────────────────────────────────────────────────────────
 
 export default function PlannerApp() {
@@ -114,7 +143,9 @@ export default function PlannerApp() {
   const [loading, setLoading] = useState(true)
   const [allocationMode, setAllocationMode] = useState<AllocationMode>('distance')
   const [trafficScenario, setTrafficScenario] = useState<TrafficScenario>('normal')
+  const [timeWindow, setTimeWindow] = useState<TimeWindow>('business')
   const [activeView, setActiveView] = useState<AppView>('operation')
+  const [mapLayers, setMapLayers] = useState<MapLayers>(DEFAULT_MAP_LAYERS)
   const [search, setSearch] = useState('')
   const [baseFilter, setBaseFilter] = useState('all')
   const [sourceFilter, setSourceFilter] = useState<SourceFilter>('all')
@@ -134,9 +165,11 @@ export default function PlannerApp() {
     [bases],
   )
 
+  const trafficFactor = TRAFFIC_SCENARIOS[trafficScenario].factor * TIME_WINDOWS[timeWindow].factor
+
   const assignments = useMemo(
-    () => assignServices(services, bases, routeIndex, allocationMode, pinnedServices, TRAFFIC_SCENARIOS[trafficScenario].factor),
-    [services, bases, routeIndex, allocationMode, pinnedServices, trafficScenario],
+    () => assignServices(services, bases, routeIndex, allocationMode, pinnedServices, trafficFactor),
+    [services, bases, routeIndex, allocationMode, pinnedServices, trafficFactor],
   )
 
   const summaries = useMemo(() => summarizeBases(bases, assignments), [bases, assignments])
@@ -172,8 +205,8 @@ export default function PlannerApp() {
 
   // Distribuição sem nenhuma fixação — usada para mostrar "base original" no painel de fixações
   const autoAssignments = useMemo(
-    () => assignServices(services, bases, routeIndex, allocationMode, {}, TRAFFIC_SCENARIOS[trafficScenario].factor),
-    [services, bases, routeIndex, allocationMode, trafficScenario],
+    () => assignServices(services, bases, routeIndex, allocationMode, {}, trafficFactor),
+    [services, bases, routeIndex, allocationMode, trafficFactor],
   )
 
   const originalBaseMap = useMemo(
@@ -188,10 +221,23 @@ export default function PlannerApp() {
   const osrmCoverage = services.length ? (osrmCount / services.length) * 100 : 0
   const excludedOutlierCount = outlierIds.size
   const pinnedCount = Object.keys(pinnedServices).length
+  const longServiceCount = assignments.filter((i) => i.distanceKm > 30 || i.durationMin > 45).length
+  const scenarioComparisons = useMemo(
+    () => buildScenarioComparisons(services, bases, routeIndex, pinnedServices, trafficFactor),
+    [services, bases, routeIndex, pinnedServices, trafficFactor],
+  )
+  const operationalRankings = useMemo(
+    () => buildOperationalRankings(assignments, summaries, qualityIssues),
+    [assignments, summaries, qualityIssues],
+  )
 
   function handleSort(field: SortField) {
     if (sortBy === field) setSortDir((d) => d === 'asc' ? 'desc' : 'asc')
     else { setSortBy(field); setSortDir('asc') }
+  }
+
+  function toggleMapLayer(layer: keyof MapLayers) {
+    setMapLayers((current) => ({ ...current, [layer]: !current[layer] }))
   }
 
   function pinService(serviceId: number, baseId: string) {
@@ -253,7 +299,7 @@ export default function PlannerApp() {
   // ─── Exports ─────────────────────────────────────────────────────────────────
 
   function exportCsv() {
-    const header = ['id', 'descricao', 'latitude', 'longitude', 'base_sugerida', 'distancia_km', 'tempo_minutos', 'cenario_transito', 'fator_transito', 'fonte', 'fixado']
+    const header = ['id', 'descricao', 'latitude', 'longitude', 'base_sugerida', 'distancia_km', 'tempo_minutos', 'cenario_transito', 'janela_saida', 'fator_transito', 'fonte', 'fixado']
     const rows = assignments.map((item) => [
       item.id,
       `"${item.description.replace(/"/g, '""')}"`,
@@ -263,7 +309,8 @@ export default function PlannerApp() {
       item.distanceKm.toFixed(2),
       Math.round(item.durationMin),
       `"${TRAFFIC_SCENARIOS[trafficScenario].label}"`,
-      TRAFFIC_SCENARIOS[trafficScenario].factor.toFixed(2),
+      `"${TIME_WINDOWS[timeWindow].label}"`,
+      trafficFactor.toFixed(2),
       item.source === 'osrm' ? 'OSRM' : 'Estimado',
       pinnedServices[item.id] ? 'Sim' : '',
     ])
@@ -287,7 +334,8 @@ export default function PlannerApp() {
       distancia_km: Number(item.distanceKm.toFixed(2)),
       tempo_minutos: Math.round(item.durationMin),
       cenario_transito: TRAFFIC_SCENARIOS[trafficScenario].label,
-      fator_transito: TRAFFIC_SCENARIOS[trafficScenario].factor,
+      janela_saida: TIME_WINDOWS[timeWindow].label,
+      fator_transito: Number(trafficFactor.toFixed(2)),
       fonte: item.source === 'osrm' ? 'OpenStreetMap/OSRM' : 'Estimado',
       fixado: pinnedServices[item.id] ? 'Sim' : '',
     }))
@@ -302,7 +350,8 @@ export default function PlannerApp() {
       tempo_total_horas: Number((item.totalMin / 60).toFixed(2)),
       tempo_medio_minutos: Math.round(item.avgMin),
       cenario_transito: TRAFFIC_SCENARIOS[trafficScenario].label,
-      fator_transito: TRAFFIC_SCENARIOS[trafficScenario].factor,
+      janela_saida: TIME_WINDOWS[timeWindow].label,
+      fator_transito: Number(trafficFactor.toFixed(2)),
     }))
     const issueRows = qualityIssues.map((item) => ({
       id: item.id,
@@ -313,9 +362,21 @@ export default function PlannerApp() {
       longitude: item.lng,
       detalhe: item.detail,
     }))
+    const scenarioRows = scenarioComparisons.map((item) => ({
+      criterio: item.modeLabel,
+      distancia_total_km: Number(item.totalKm.toFixed(2)),
+      tempo_total_horas: Number((item.totalMin / 60).toFixed(2)),
+      distancia_media_km: Number(item.avgKm.toFixed(2)),
+      tempo_medio_minutos: Math.round(item.avgMin),
+      bases_saturadas: item.overloadedBases,
+      cenario_transito: TRAFFIC_SCENARIOS[trafficScenario].label,
+      janela_saida: TIME_WINDOWS[timeWindow].label,
+      fator_transito: Number(trafficFactor.toFixed(2)),
+    }))
     const workbook = XLSX.utils.book_new()
     XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(serviceRows), 'Serviços distribuídos')
     XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(summaryRows), 'Resumo por base')
+    XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(scenarioRows), 'Comparador cenários')
     XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(issueRows), 'Qualidade coordenadas')
     XLSX.writeFile(workbook, 'planejamento-servicos.xlsx')
   }
@@ -355,6 +416,7 @@ export default function PlannerApp() {
 
       <nav className="view-tabs" aria-label="Visões do planejamento">
         <button className={activeView === 'operation' ? 'active' : ''} onClick={() => setActiveView('operation')}>Operação</button>
+        <button className={activeView === 'analysis' ? 'active' : ''} onClick={() => setActiveView('analysis')}>Análise</button>
         <button className={activeView === 'quality' ? 'active' : ''} onClick={() => setActiveView('quality')}>Qualidade</button>
       </nav>
 
@@ -382,12 +444,34 @@ export default function PlannerApp() {
               <small>{TRAFFIC_SCENARIOS[trafficScenario].detail}</small>
             </label>
 
+            <label className="form-row">
+              Janela de saída
+              <select value={timeWindow} onChange={(e) => setTimeWindow(e.target.value as TimeWindow)}>
+                {(Object.entries(TIME_WINDOWS) as Array<[TimeWindow, typeof TIME_WINDOWS[TimeWindow]]>).map(([key, window]) => (
+                  <option key={key} value={key}>{window.label}</option>
+                ))}
+              </select>
+              <small>{TIME_WINDOWS[timeWindow].detail} · fator total {trafficFactor.toFixed(2)}x</small>
+            </label>
+
+            <div className="field-group">
+              <label>Camadas do mapa</label>
+              <div className="layer-toggles">
+                <button type="button" className={mapLayers.services ? 'active' : ''} onClick={() => toggleMapLayer('services')}>Serviços</button>
+                <button type="button" className={mapLayers.bases ? 'active' : ''} onClick={() => toggleMapLayer('bases')}>Bases</button>
+                <button type="button" className={mapLayers.heatmap ? 'active' : ''} onClick={() => toggleMapLayer('heatmap')}>Heatmap</button>
+                <button type="button" className={mapLayers.longServices ? 'active' : ''} onClick={() => toggleMapLayer('longServices')}>Longos ({longServiceCount})</button>
+                <button type="button" className={mapLayers.saturatedBases ? 'active' : ''} onClick={() => toggleMapLayer('saturatedBases')}>Saturadas</button>
+                <button type="button" className={mapLayers.outliers ? 'active' : ''} onClick={() => toggleMapLayer('outliers')}>Outliers</button>
+              </div>
+            </div>
+
             <button
               type="button"
               className={`secondary-button ${showOutliers ? 'active' : ''}`}
               onClick={() => setShowOutliers((value) => !value)}
             >
-              {showOutliers ? 'Ocultar outliers' : `Exibir outliers (${excludedOutlierCount})`}
+              {showOutliers ? 'Excluir outliers da operação' : `Incluir outliers na operação (${excludedOutlierCount})`}
             </button>
           </aside>
 
@@ -395,9 +479,10 @@ export default function PlannerApp() {
             <PlannerMap
               services={filteredAssignments}
               bases={summaries}
-              issues={showOutliers ? qualityIssues : []}
+              issues={qualityIssues}
               baseColorMap={baseColorMap}
               activeBaseId={baseFilter}
+              layers={mapLayers}
             />
           </section>
 
@@ -437,6 +522,72 @@ export default function PlannerApp() {
               })}
             </div>
           </aside>
+        </section>
+      )}
+
+      {activeView === 'analysis' && (
+        <section className="analysis-section">
+          <div className="table-toolbar">
+            <div>
+              <h2>Comparador de cenários</h2>
+              <p>Compara critérios de distribuição usando o cenário de trânsito e a janela de saída selecionados.</p>
+            </div>
+          </div>
+          <div className="scenario-grid">
+            {scenarioComparisons.map((scenario) => (
+              <article className={`scenario-card ${scenario.mode === allocationMode ? 'active' : ''}`} key={scenario.mode}>
+                <span>{scenario.modeLabel}</span>
+                <strong>{formatNumber(scenario.totalKm)} km</strong>
+                <small>{formatNumber(scenario.totalMin / 60)} h · {scenario.overloadedBases} bases saturadas</small>
+                <div className="scenario-metrics">
+                  <em>{formatNumber(scenario.avgKm)} km/serv</em>
+                  <em>{Math.round(scenario.avgMin)} min/serv</em>
+                </div>
+              </article>
+            ))}
+          </div>
+
+          <div className="table-toolbar ranking-toolbar">
+            <div>
+              <h2>Ranking de problemas</h2>
+              <p>Serviços e bases que mais pressionam deslocamento, tempo e capacidade.</p>
+            </div>
+          </div>
+          <div className="ranking-grid">
+            <RankingList
+              title="Serviços mais distantes"
+              items={operationalRankings.farServices.map((item) => ({
+                key: item.id,
+                title: item.description,
+                meta: `${item.baseName} · ${formatNumber(item.distanceKm)} km · ${Math.round(item.durationMin)} min`,
+              }))}
+            />
+            <RankingList
+              title="Bases mais saturadas"
+              items={operationalRankings.saturatedBases.map((item) => ({
+                key: item.id,
+                title: item.name,
+                meta: `${item.assigned.toLocaleString('pt-BR')} serviços · ${formatPercent(item.saturation * 100)} saturação`,
+              }))}
+            />
+            <RankingList
+              title="Maior tempo médio"
+              items={operationalRankings.slowBases.map((item) => ({
+                key: item.id,
+                title: item.name,
+                meta: `${Math.round(item.avgMin)} min/serv · ${formatNumber(item.avgKm)} km/serv`,
+              }))}
+            />
+            <RankingList
+              title="Alertas críticos"
+              items={operationalRankings.criticalIssues.map((item) => ({
+                key: item.id,
+                title: item.type,
+                meta: `${item.description} · ${item.detail}`,
+              }))}
+              emptyText="Sem alertas críticos"
+            />
+          </div>
         </section>
       )}
 
@@ -601,6 +752,27 @@ function Metric({ label, value, tone }: { label: string; value: string; tone?: '
   )
 }
 
+function RankingList({ title, items, emptyText = 'Sem itens' }: {
+  title: string
+  items: Array<{ key: string | number; title: string; meta: string }>
+  emptyText?: string
+}) {
+  return (
+    <article className="ranking-card">
+      <h3>{title}</h3>
+      <ol>
+        {items.map((item) => (
+          <li key={item.key}>
+            <strong>{item.title}</strong>
+            <span>{item.meta}</span>
+          </li>
+        ))}
+      </ol>
+      {!items.length && <p>{emptyText}</p>}
+    </article>
+  )
+}
+
 function SortTh({ label, field, sortBy, sortDir, onSort }: {
   label: string
   field: SortField
@@ -616,18 +788,20 @@ function SortTh({ label, field, sortBy, sortDir, onSort }: {
   )
 }
 
-function PlannerMap({ services, bases, issues, baseColorMap, activeBaseId }: {
+function PlannerMap({ services, bases, issues, baseColorMap, activeBaseId, layers }: {
   services: Assignment[]
   bases: BaseSummary[]
   issues: QualityIssue[]
   baseColorMap: Map<string, string>
   activeBaseId: string
+  layers: MapLayers
 }) {
   const mapElement = useRef<HTMLDivElement | null>(null)
   const map = useRef<L.Map | null>(null)
   const clusterGroup = useRef<L.MarkerClusterGroup | null>(null)
   const baseLayer = useRef<L.LayerGroup | null>(null)
   const issueLayer = useRef<L.LayerGroup | null>(null)
+  const heatLayer = useRef<L.LayerGroup | null>(null)
   const routeLayer = useRef<L.LayerGroup | null>(null)
   const abortRef = useRef<AbortController | null>(null)
 
@@ -650,17 +824,19 @@ function PlannerMap({ services, bases, issues, baseColorMap, activeBaseId }: {
 
     baseLayer.current = L.layerGroup().addTo(map.current)
     issueLayer.current = L.layerGroup().addTo(map.current)
+    heatLayer.current = L.layerGroup().addTo(map.current)
     routeLayer.current = L.layerGroup().addTo(map.current)
 
     map.current.on('click', () => routeLayer.current?.clearLayers())
   }, [])
 
   useEffect(() => {
-    if (!map.current || !clusterGroup.current || !baseLayer.current || !issueLayer.current || !routeLayer.current) return
+    if (!map.current || !clusterGroup.current || !baseLayer.current || !issueLayer.current || !heatLayer.current || !routeLayer.current) return
 
     clusterGroup.current.clearLayers()
     baseLayer.current.clearLayers()
     issueLayer.current.clearLayers()
+    heatLayer.current.clearLayers()
     routeLayer.current.clearLayers()
     abortRef.current?.abort()
 
@@ -669,14 +845,31 @@ function PlannerMap({ services, bases, issues, baseColorMap, activeBaseId }: {
       [DF_BOUNDS.maxLat, DF_BOUNDS.maxLng],
     ])
 
+    if (layers.heatmap) {
+      buildHeatCells(services).forEach((cell) => {
+        const intensity = Math.min(1, cell.count / 80)
+        L.circleMarker([cell.lat, cell.lng], {
+          radius: 10 + intensity * 28,
+          color: '#145f3d',
+          fillColor: '#23b36c',
+          fillOpacity: 0.12 + intensity * 0.36,
+          weight: 1,
+        })
+          .bindTooltip(`${cell.count.toLocaleString('pt-BR')} serviços nesta região`, { sticky: true })
+          .addTo(heatLayer.current!)
+      })
+    }
+
     // Serviços — cor por base, agrupados em cluster
-    services.forEach((service) => {
-      const color = baseColorMap.get(service.baseId) ?? '#2ad184'
+    if (layers.services) services.forEach((service) => {
+      const isLong = service.distanceKm > 30 || service.durationMin > 45
+      if (layers.longServices && !isLong) return
+      const color = isLong ? '#d94832' : baseColorMap.get(service.baseId) ?? '#2ad184'
       const icon = L.divIcon({
         className: '',
-        html: `<div class="service-marker-dot" style="background:${color}"></div>`,
-        iconSize: [8, 8],
-        iconAnchor: [4, 4],
+        html: `<div class="service-marker-dot ${isLong ? 'long' : ''}" style="background:${color}"></div>`,
+        iconSize: [isLong ? 12 : 8, isLong ? 12 : 8],
+        iconAnchor: [isLong ? 6 : 4, isLong ? 6 : 4],
       })
       L.marker([service.lat, service.lng], { icon })
         .bindTooltip(
@@ -689,7 +882,8 @@ function PlannerMap({ services, bases, issues, baseColorMap, activeBaseId }: {
     })
 
     // Bases — destaque visual na base ativa
-    bases.forEach((base) => {
+    if (layers.bases) bases.forEach((base) => {
+      if (layers.saturatedBases && base.saturation < 1) return
       const isActive = activeBaseId !== 'all' && base.id === activeBaseId
       const color = baseColorMap.get(base.id) ?? '#46ef98'
       const point = L.latLng(base.lat, base.lng)
@@ -716,7 +910,7 @@ function PlannerMap({ services, bases, issues, baseColorMap, activeBaseId }: {
     })
 
     // Alertas de qualidade
-    issues.slice(0, 160).forEach((issue) => {
+    if (layers.outliers) issues.slice(0, 160).forEach((issue) => {
       const point = L.latLng(issue.lat, issue.lng)
       bounds.extend(point)
       L.circleMarker(point, {
@@ -731,7 +925,7 @@ function PlannerMap({ services, bases, issues, baseColorMap, activeBaseId }: {
     })
 
     if (bounds.isValid()) map.current.fitBounds(bounds.pad(0.08), { maxZoom: 12 })
-  }, [activeBaseId, baseColorMap, bases, issues, services])
+  }, [activeBaseId, baseColorMap, bases, issues, layers, services])
 
   async function showOsrmRoute(service: Assignment, currentBases: BaseSummary[]) {
     if (!map.current || !routeLayer.current) return
@@ -940,6 +1134,70 @@ function auditCoordinateQuality(
   })
 
   return issues.sort((a, b) => (a.severity === b.severity ? 0 : a.severity === 'Crítico' ? -1 : 1))
+}
+
+function buildScenarioComparisons(
+  services: ServiceRow[],
+  bases: BaseRow[],
+  routeIndex: RouteIndex | null,
+  pinnedServices: Record<number, string>,
+  trafficFactor: number,
+) {
+  return ([
+    ['distance', 'Distância'],
+    ['balanced', 'Equilíbrio'],
+    ['capacity', 'Capacidade'],
+  ] as Array<[AllocationMode, string]>).map(([mode, modeLabel]) => {
+    const assignments = assignServices(services, bases, routeIndex, mode, pinnedServices, trafficFactor)
+    const summaries = summarizeBases(bases, assignments)
+    const totalKm = assignments.reduce((sum, item) => sum + item.distanceKm, 0)
+    const totalMin = assignments.reduce((sum, item) => sum + item.durationMin, 0)
+    const count = Math.max(1, assignments.length)
+    return {
+      mode,
+      modeLabel,
+      totalKm,
+      totalMin,
+      avgKm: totalKm / count,
+      avgMin: totalMin / count,
+      overloadedBases: summaries.filter((item) => item.saturation > 1).length,
+    }
+  })
+}
+
+function buildOperationalRankings(assignments: Assignment[], summaries: BaseSummary[], issues: QualityIssue[]) {
+  return {
+    farServices: [...assignments]
+      .sort((a, b) => b.distanceKm - a.distanceKm)
+      .slice(0, 8),
+    saturatedBases: [...summaries]
+      .sort((a, b) => b.saturation - a.saturation)
+      .slice(0, 8),
+    slowBases: [...summaries]
+      .sort((a, b) => b.avgMin - a.avgMin)
+      .slice(0, 8),
+    criticalIssues: issues
+      .filter((item) => item.severity === 'Crítico')
+      .slice(0, 8),
+  }
+}
+
+function buildHeatCells(services: Assignment[]) {
+  const cells = new Map<string, { latSum: number; lngSum: number; count: number }>()
+  services.forEach((service) => {
+    const latKey = Math.round(service.lat / 0.015)
+    const lngKey = Math.round(service.lng / 0.015)
+    const key = `${latKey}:${lngKey}`
+    const cell = cells.get(key) ?? { latSum: 0, lngSum: 0, count: 0 }
+    cell.latSum += service.lat
+    cell.lngSum += service.lng
+    cell.count += 1
+    cells.set(key, cell)
+  })
+  return [...cells.values()]
+    .map((cell) => ({ lat: cell.latSum / cell.count, lng: cell.lngSum / cell.count, count: cell.count }))
+    .sort((a, b) => b.count - a.count)
+    .slice(0, 220)
 }
 
 
