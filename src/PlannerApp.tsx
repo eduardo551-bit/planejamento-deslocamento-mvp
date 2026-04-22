@@ -14,6 +14,7 @@ type RouteSource = 'osrm' | 'estimate'
 type SortField = 'description' | 'baseName' | 'distanceKm' | 'durationMin'
 type SortDir = 'asc' | 'desc'
 type SourceFilter = 'all' | 'osrm' | 'estimate'
+type TrafficScenario = 'free' | 'normal' | 'morning_peak' | 'evening_peak' | 'severe'
 
 type ServiceRow = {
   id: number
@@ -96,6 +97,14 @@ const BASE_COLORS = [
   '#1abc9c', '#e67e22', '#fd79a8', '#6c5ce7',
 ]
 
+const TRAFFIC_SCENARIOS: Record<TrafficScenario, { label: string; factor: number; detail: string }> = {
+  free: { label: 'Fluxo livre', factor: 0.9, detail: 'tempo OSRM -10%' },
+  normal: { label: 'Tempo médio', factor: 1, detail: 'tempo OSRM original' },
+  morning_peak: { label: 'Pico manhã', factor: 1.3, detail: 'tempo OSRM +30%' },
+  evening_peak: { label: 'Pico tarde', factor: 1.45, detail: 'tempo OSRM +45%' },
+  severe: { label: 'Trânsito severo', factor: 1.7, detail: 'tempo OSRM +70%' },
+}
+
 // ─── Component ───────────────────────────────────────────────────────────────
 
 export default function PlannerApp() {
@@ -104,6 +113,7 @@ export default function PlannerApp() {
   const [routeIndex, setRouteIndex] = useState<RouteIndex | null>(null)
   const [loading, setLoading] = useState(true)
   const [allocationMode, setAllocationMode] = useState<AllocationMode>('distance')
+  const [trafficScenario, setTrafficScenario] = useState<TrafficScenario>('normal')
   const [activeView, setActiveView] = useState<AppView>('operation')
   const [search, setSearch] = useState('')
   const [baseFilter, setBaseFilter] = useState('all')
@@ -125,8 +135,8 @@ export default function PlannerApp() {
   )
 
   const assignments = useMemo(
-    () => assignServices(services, bases, routeIndex, allocationMode, pinnedServices),
-    [services, bases, routeIndex, allocationMode, pinnedServices],
+    () => assignServices(services, bases, routeIndex, allocationMode, pinnedServices, TRAFFIC_SCENARIOS[trafficScenario].factor),
+    [services, bases, routeIndex, allocationMode, pinnedServices, trafficScenario],
   )
 
   const summaries = useMemo(() => summarizeBases(bases, assignments), [bases, assignments])
@@ -162,8 +172,8 @@ export default function PlannerApp() {
 
   // Distribuição sem nenhuma fixação — usada para mostrar "base original" no painel de fixações
   const autoAssignments = useMemo(
-    () => assignServices(services, bases, routeIndex, allocationMode, {}),
-    [services, bases, routeIndex, allocationMode],
+    () => assignServices(services, bases, routeIndex, allocationMode, {}, TRAFFIC_SCENARIOS[trafficScenario].factor),
+    [services, bases, routeIndex, allocationMode, trafficScenario],
   )
 
   const originalBaseMap = useMemo(
@@ -243,7 +253,7 @@ export default function PlannerApp() {
   // ─── Exports ─────────────────────────────────────────────────────────────────
 
   function exportCsv() {
-    const header = ['id', 'descricao', 'latitude', 'longitude', 'base_sugerida', 'distancia_km', 'tempo_minutos', 'fonte', 'fixado']
+    const header = ['id', 'descricao', 'latitude', 'longitude', 'base_sugerida', 'distancia_km', 'tempo_minutos', 'cenario_transito', 'fator_transito', 'fonte', 'fixado']
     const rows = assignments.map((item) => [
       item.id,
       `"${item.description.replace(/"/g, '""')}"`,
@@ -252,6 +262,8 @@ export default function PlannerApp() {
       `"${item.baseName.replace(/"/g, '""')}"`,
       item.distanceKm.toFixed(2),
       Math.round(item.durationMin),
+      `"${TRAFFIC_SCENARIOS[trafficScenario].label}"`,
+      TRAFFIC_SCENARIOS[trafficScenario].factor.toFixed(2),
       item.source === 'osrm' ? 'OSRM' : 'Estimado',
       pinnedServices[item.id] ? 'Sim' : '',
     ])
@@ -274,6 +286,8 @@ export default function PlannerApp() {
       base_sugerida: item.baseName,
       distancia_km: Number(item.distanceKm.toFixed(2)),
       tempo_minutos: Math.round(item.durationMin),
+      cenario_transito: TRAFFIC_SCENARIOS[trafficScenario].label,
+      fator_transito: TRAFFIC_SCENARIOS[trafficScenario].factor,
       fonte: item.source === 'osrm' ? 'OpenStreetMap/OSRM' : 'Estimado',
       fixado: pinnedServices[item.id] ? 'Sim' : '',
     }))
@@ -287,6 +301,8 @@ export default function PlannerApp() {
       distancia_media_km: Number(item.avgKm.toFixed(2)),
       tempo_total_horas: Number((item.totalMin / 60).toFixed(2)),
       tempo_medio_minutos: Math.round(item.avgMin),
+      cenario_transito: TRAFFIC_SCENARIOS[trafficScenario].label,
+      fator_transito: TRAFFIC_SCENARIOS[trafficScenario].factor,
     }))
     const issueRows = qualityIssues.map((item) => ({
       id: item.id,
@@ -356,6 +372,15 @@ export default function PlannerApp() {
               </div>
             </div>
 
+            <label className="form-row">
+              Cenário de trânsito
+              <select value={trafficScenario} onChange={(e) => setTrafficScenario(e.target.value as TrafficScenario)}>
+                {(Object.entries(TRAFFIC_SCENARIOS) as Array<[TrafficScenario, typeof TRAFFIC_SCENARIOS[TrafficScenario]]>).map(([key, scenario]) => (
+                  <option key={key} value={key}>{scenario.label}</option>
+                ))}
+              </select>
+              <small>{TRAFFIC_SCENARIOS[trafficScenario].detail}</small>
+            </label>
 
             <button
               type="button"
@@ -813,6 +838,7 @@ function assignServices(
   routeIndex: RouteIndex | null,
   mode: AllocationMode,
   pinnedServices: Record<number, string>,
+  trafficFactor = 1,
 ): Assignment[] {
   const load: Record<string, number> = Object.fromEntries(bases.map((b) => [b.id, 0]))
 
@@ -823,7 +849,7 @@ function assignServices(
       if (pinnedBase) {
         load[pinnedBase.id] += 1
         const route = getRouteValue(service, pinnedBase, routeIndex)
-        return { ...service, baseId: pinnedBase.id, baseName: pinnedBase.name, distanceKm: route.distanceKm, durationMin: route.durationMin, source: route.source }
+        return { ...service, baseId: pinnedBase.id, baseName: pinnedBase.name, distanceKm: route.distanceKm, durationMin: route.durationMin * trafficFactor, source: route.source }
       }
     }
 
@@ -836,7 +862,7 @@ function assignServices(
     }).sort((a, b) => a.score - b.score)
     const winner = ranked[0]
     load[winner.base.id] += 1
-    return { ...service, baseId: winner.base.id, baseName: winner.base.name, distanceKm: winner.route.distanceKm, durationMin: winner.route.durationMin, source: winner.route.source }
+    return { ...service, baseId: winner.base.id, baseName: winner.base.name, distanceKm: winner.route.distanceKm, durationMin: winner.route.durationMin * trafficFactor, source: winner.route.source }
   })
 }
 

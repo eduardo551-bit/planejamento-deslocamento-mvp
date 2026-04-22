@@ -357,7 +357,8 @@ button {
 .base-item input,
 .filters input,
 .filters select,
-.base-select {
+.base-select,
+.form-row select {
   min-height: 38px;
   border: 1px solid #cbd8d0;
   border-radius: 8px;
@@ -763,7 +764,8 @@ body {
 .base-item input,
 .filters input,
 .filters select,
-.base-select {
+.base-select,
+.form-row select {
   background: #0b1412;
   border-color: rgba(160, 185, 172, 0.28);
   color: #f4f8f5;
@@ -1036,7 +1038,8 @@ body {
 .base-item input,
 .filters input,
 .filters select,
-.base-select {
+.base-select,
+.form-row select {
   background: #ffffff;
   border-color: #c8d5ce;
   color: #17211c;
@@ -1045,9 +1048,21 @@ body {
 .base-item input:focus,
 .filters input:focus,
 .filters select:focus,
-.base-select:focus {
+.base-select:focus,
+.form-row select:focus {
   outline: 3px solid rgba(47, 184, 111, 0.2);
   border-color: #2fb86f;
+}
+
+.form-row {
+  display: grid;
+  gap: 7px;
+  margin: 14px 0;
+}
+
+.form-row small {
+  color: #6b7b70;
+  font-weight: 700;
 }
 
 .base-select.pinned {
