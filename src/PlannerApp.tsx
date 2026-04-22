@@ -83,9 +83,10 @@ type RouteIndex = {
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
-const SERVICES_FILE = '/data/services.json'
-const BASES_FILE = '/data/bases.json'
-const ROUTES_FILE = '/data/osrm-routes.json'
+const DATA_BASE_URL = `${import.meta.env.BASE_URL}data/`
+const SERVICES_FILE = `${DATA_BASE_URL}services.json`
+const BASES_FILE = `${DATA_BASE_URL}bases.json`
+const ROUTES_FILE = `${DATA_BASE_URL}osrm-routes.json`
 const FALLBACK_AVG_SPEED = 34
 const FALLBACK_ROAD_FACTOR = 1.28
 const DF_BOUNDS = { minLat: -16.12, maxLat: -15.45, minLng: -48.30, maxLng: -47.25 }
