@@ -506,6 +506,20 @@ button {
   font-size: 0.78rem;
 }
 
+.type-pill {
+  display: inline-flex;
+  align-items: center;
+  min-height: 26px;
+  max-width: 160px;
+  padding: 0 9px;
+  border-radius: 999px;
+  background: #edf6f1;
+  color: #145f3d;
+  font-weight: 900;
+  font-size: 0.78rem;
+  white-space: nowrap;
+}
+
 .source-pill.osrm {
   background: #e6f5ee;
   color: #0f6b47;

@@ -56,6 +56,7 @@ type RouteValue = {
 type Assignment = ServiceRow & {
   baseId: string
   baseName: string
+  serviceType: string
   distanceKm: number
   durationMin: number
   source: RouteSource
@@ -161,6 +162,7 @@ export default function PlannerApp() {
   const [search, setSearch] = useState('')
   const [baseFilter, setBaseFilter] = useState('all')
   const [sourceFilter, setSourceFilter] = useState<SourceFilter>('all')
+  const [typeFilter, setTypeFilter] = useState('all')
   const [sortBy, setSortBy] = useState<SortField>('distanceKm')
   const [sortDir, setSortDir] = useState<SortDir>('asc')
   const [showOutliers, setShowOutliers] = useState(false)
@@ -202,9 +204,10 @@ export default function PlannerApp() {
       if (showOnlyPinned && !pinnedServices[item.id]) return false
       const matchesText = !query || normalizeText(item.description).includes(query) || normalizeText(item.baseName).includes(query)
       const matchesBase = baseFilter === 'all' || item.baseId === baseFilter
+      const matchesType = typeFilter === 'all' || item.serviceType === typeFilter
       const matchesOutlier = showOutliers || !outlierIds.has(item.id)
       const matchesSource = sourceFilter === 'all' || item.source === sourceFilter
-      return matchesText && matchesBase && matchesOutlier && matchesSource
+      return matchesText && matchesBase && matchesType && matchesOutlier && matchesSource
     })
     return [...filtered].sort((a, b) => {
       const dir = sortDir === 'asc' ? 1 : -1
@@ -213,7 +216,7 @@ export default function PlannerApp() {
       if (sortBy === 'baseName') return a.baseName.localeCompare(b.baseName, 'pt-BR') * dir
       return a.description.localeCompare(b.description, 'pt-BR') * dir
     })
-  }, [assignments, baseFilter, outlierIds, pinnedServices, search, showOnlyPinned, showOutliers, sourceFilter, sortBy, sortDir])
+  }, [assignments, baseFilter, outlierIds, pinnedServices, search, showOnlyPinned, showOutliers, sourceFilter, sortBy, sortDir, typeFilter])
 
   // Distribuição sem nenhuma fixação — usada para mostrar "base original" no painel de fixações
   const autoAssignments = useMemo(
@@ -234,6 +237,8 @@ export default function PlannerApp() {
   const excludedOutlierCount = outlierIds.size
   const pinnedCount = Object.keys(pinnedServices).length
   const longServiceCount = assignments.filter((i) => i.distanceKm > 30 || i.durationMin > 45).length
+  const serviceTypeOptions = useMemo(() => buildServiceTypeOptions(assignments), [assignments])
+  const serviceTypeSummary = useMemo(() => summarizeServiceTypes(assignments), [assignments])
   const scenarioComparisons = useMemo(
     () => buildScenarioComparisons(services, bases, routeIndex, pinnedServices, trafficFactor),
     [services, bases, routeIndex, pinnedServices, trafficFactor],
@@ -315,10 +320,11 @@ export default function PlannerApp() {
   // ─── Exports ─────────────────────────────────────────────────────────────────
 
   function exportCsv() {
-    const header = ['id', 'descricao', 'latitude', 'longitude', 'base_sugerida', 'distancia_km', 'tempo_minutos', 'cenario_transito', 'janela_saida', 'fator_transito', 'fonte', 'fixado']
+    const header = ['id', 'descricao', 'tipo_servico', 'latitude', 'longitude', 'base_sugerida', 'distancia_km', 'tempo_minutos', 'cenario_transito', 'janela_saida', 'fator_transito', 'fonte', 'fixado']
     const rows = assignments.map((item) => [
       item.id,
       `"${item.description.replace(/"/g, '""')}"`,
+      `"${item.serviceType}"`,
       item.lat,
       item.lng,
       `"${item.baseName.replace(/"/g, '""')}"`,
@@ -344,6 +350,7 @@ export default function PlannerApp() {
     const serviceRows = assignments.map((item) => ({
       id: item.id,
       descricao: item.description,
+      tipo_servico: item.serviceType,
       latitude: item.lat,
       longitude: item.lng,
       base_sugerida: item.baseName,
@@ -389,10 +396,19 @@ export default function PlannerApp() {
       janela_saida: TIME_WINDOWS[timeWindow].label,
       fator_transito: Number(trafficFactor.toFixed(2)),
     }))
+    const typeRows = serviceTypeSummary.map((item) => ({
+      tipo_servico: item.type,
+      servicos: item.count,
+      distancia_total_km: Number(item.totalKm.toFixed(2)),
+      distancia_media_km: Number(item.avgKm.toFixed(2)),
+      tempo_total_horas: Number((item.totalMin / 60).toFixed(2)),
+      tempo_medio_minutos: Math.round(item.avgMin),
+    }))
     const workbook = XLSX.utils.book_new()
     XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(serviceRows), 'Serviços distribuídos')
     XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(summaryRows), 'Resumo por base')
     XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(scenarioRows), 'Comparador cenários')
+    XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(typeRows), 'Resumo por tipo')
     XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(issueRows), 'Qualidade coordenadas')
     XLSX.writeFile(workbook, 'planejamento-servicos.xlsx')
   }
@@ -610,6 +626,14 @@ export default function PlannerApp() {
           </div>
           <div className="ranking-grid">
             <RankingList
+              title="Tipos de serviço"
+              items={serviceTypeSummary.slice(0, 8).map((item) => ({
+                key: item.type,
+                title: item.type,
+                meta: `${item.count.toLocaleString('pt-BR')} serviços · ${formatNumber(item.avgKm)} km/serv · ${Math.round(item.avgMin)} min/serv`,
+              }))}
+            />
+            <RankingList
               title="Serviços mais distantes"
               items={operationalRankings.farServices.map((item) => ({
                 key: item.id,
@@ -697,6 +721,10 @@ export default function PlannerApp() {
                 <option value="osrm">Somente OSRM</option>
                 <option value="estimate">Somente estimativa</option>
               </select>
+              <select value={typeFilter} onChange={(e) => setTypeFilter(e.target.value)}>
+                <option value="all">Todos os tipos</option>
+                {serviceTypeOptions.map((type) => <option key={type} value={type}>{type}</option>)}
+              </select>
               {pinnedCount > 0 && (
                 <button
                   type="button"
@@ -750,6 +778,7 @@ export default function PlannerApp() {
                 <tr>
                   <SortTh label="Serviço" field="description" sortBy={sortBy} sortDir={sortDir} onSort={handleSort} />
                   <th>Base sugerida</th>
+                  <th>Tipo</th>
                   <SortTh label="Distância" field="distanceKm" sortBy={sortBy} sortDir={sortDir} onSort={handleSort} />
                   <SortTh label="Tempo" field="durationMin" sortBy={sortBy} sortDir={sortDir} onSort={handleSort} />
                   <th>Fonte</th>
@@ -781,6 +810,7 @@ export default function PlannerApp() {
                           )}
                         </div>
                       </td>
+                      <td><span className="type-pill">{item.serviceType}</span></td>
                       <td>{formatNumber(item.distanceKm)} km</td>
                       <td>{Math.round(item.durationMin)} min</td>
                       <td><span className={`source-pill ${item.source}`}>{item.source === 'osrm' ? 'OSRM' : 'Média'}</span></td>
@@ -1013,7 +1043,7 @@ function PlannerMap({
       })
       L.marker([service.lat, service.lng], { icon, keyboard: false } as L.MarkerOptions)
         .bindTooltip(
-          `${service.description}<br>${service.baseName}<br>${formatNumber(service.distanceKm)} km · ${Math.round(service.durationMin)} min`,
+          `${service.description}<br>${service.serviceType} · ${service.baseName}<br>${formatNumber(service.distanceKm)} km · ${Math.round(service.durationMin)} min`,
           { sticky: true },
         )
         .on('click', (e) => { L.DomEvent.stopPropagation(e); void showOsrmRoute(service, bases) })
@@ -1222,7 +1252,7 @@ function assignServices(
       if (pinnedBase) {
         load[pinnedBase.id] += 1
         const route = getRouteValue(service, pinnedBase, routeIndex)
-        return { ...service, baseId: pinnedBase.id, baseName: pinnedBase.name, distanceKm: route.distanceKm, durationMin: route.durationMin * trafficFactor, source: route.source }
+        return { ...service, serviceType: classifyServiceType(service.description), baseId: pinnedBase.id, baseName: pinnedBase.name, distanceKm: route.distanceKm, durationMin: route.durationMin * trafficFactor, source: route.source }
       }
     }
 
@@ -1235,7 +1265,7 @@ function assignServices(
     }).sort((a, b) => a.score - b.score)
     const winner = ranked[0]
     load[winner.base.id] += 1
-    return { ...service, baseId: winner.base.id, baseName: winner.base.name, distanceKm: winner.route.distanceKm, durationMin: winner.route.durationMin * trafficFactor, source: winner.route.source }
+    return { ...service, serviceType: classifyServiceType(service.description), baseId: winner.base.id, baseName: winner.base.name, distanceKm: winner.route.distanceKm, durationMin: winner.route.durationMin * trafficFactor, source: winner.route.source }
   })
 }
 
@@ -1372,6 +1402,44 @@ function buildChangedServiceSet(
   const capacity = assignServices(services, bases, routeIndex, 'capacity', pinnedServices, trafficFactor)
   const capacityById = new Map(capacity.map((item) => [item.id, item.baseId]))
   return new Set(distance.filter((item) => capacityById.get(item.id) !== item.baseId).map((item) => item.id))
+}
+
+function classifyServiceType(description: string) {
+  const text = normalizeText(description)
+  if (/\bpoda\b|arvore|galho|vegetacao|vegetal/.test(text)) return 'Poda'
+  if (/aterramento|aterrar|haste|terra\b|malha/.test(text)) return 'Aterramento'
+  if (/iluminacao|luminaria|lampada|braco|reator|fotocelula|foto celula/.test(text)) return 'Iluminação'
+  if (/poste|postea|post[eé]/.test(text)) return 'Poste'
+  if (/cabo|condutor|ramal|fio\b|fiação|fiacao/.test(text)) return 'Cabo/Ramal'
+  if (/rede|primaria|secundaria|alimentador|circuito/.test(text)) return 'Rede'
+  if (/transformador|trafo|chave|religador|fusivel|fusível/.test(text)) return 'Equipamento'
+  if (/medidor|padrao|padrão|ligacao|ligação|desligamento|corte|religa/.test(text)) return 'Ligação/Medição'
+  if (/vistoria|inspecao|inspeção|fiscalizacao|fiscalização/.test(text)) return 'Vistoria'
+  if (/emergencia|emergência|risco|urgente|acidente/.test(text)) return 'Emergência'
+  return 'Outros'
+}
+
+function buildServiceTypeOptions(assignments: Assignment[]) {
+  return [...new Set(assignments.map((item) => item.serviceType))]
+    .sort((a, b) => a.localeCompare(b, 'pt-BR'))
+}
+
+function summarizeServiceTypes(assignments: Assignment[]) {
+  const byType = new Map<string, { type: string; count: number; totalKm: number; totalMin: number; avgKm: number; avgMin: number }>()
+  assignments.forEach((item) => {
+    const current = byType.get(item.serviceType) ?? { type: item.serviceType, count: 0, totalKm: 0, totalMin: 0, avgKm: 0, avgMin: 0 }
+    current.count += 1
+    current.totalKm += item.distanceKm
+    current.totalMin += item.durationMin
+    byType.set(item.serviceType, current)
+  })
+  return [...byType.values()]
+    .map((item) => ({
+      ...item,
+      avgKm: item.count ? item.totalKm / item.count : 0,
+      avgMin: item.count ? item.totalMin / item.count : 0,
+    }))
+    .sort((a, b) => b.count - a.count)
 }
 
 function buildHeatCells(services: Assignment[], metric: HeatMetric) {
