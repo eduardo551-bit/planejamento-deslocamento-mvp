@@ -24,7 +24,12 @@ type MapLayers = {
   longServices: boolean
   saturatedBases: boolean
   heatmap: boolean
+  regions: boolean
+  changedServices: boolean
 }
+
+type ConnectionMode = 'off' | 'selected' | 'long' | 'all'
+type HeatMetric = 'count' | 'distance' | 'time'
 
 type ServiceRow = {
   id: number
@@ -132,6 +137,8 @@ const DEFAULT_MAP_LAYERS: MapLayers = {
   longServices: false,
   saturatedBases: false,
   heatmap: false,
+  regions: false,
+  changedServices: false,
 }
 
 // ─── Component ───────────────────────────────────────────────────────────────
@@ -146,6 +153,11 @@ export default function PlannerApp() {
   const [timeWindow, setTimeWindow] = useState<TimeWindow>('business')
   const [activeView, setActiveView] = useState<AppView>('operation')
   const [mapLayers, setMapLayers] = useState<MapLayers>(DEFAULT_MAP_LAYERS)
+  const [mapDistanceLimit, setMapDistanceLimit] = useState(0)
+  const [mapTimeLimit, setMapTimeLimit] = useState(0)
+  const [connectionMode, setConnectionMode] = useState<ConnectionMode>('off')
+  const [heatMetric, setHeatMetric] = useState<HeatMetric>('count')
+  const [mapFullscreen, setMapFullscreen] = useState(false)
   const [search, setSearch] = useState('')
   const [baseFilter, setBaseFilter] = useState('all')
   const [sourceFilter, setSourceFilter] = useState<SourceFilter>('all')
@@ -229,6 +241,10 @@ export default function PlannerApp() {
   const operationalRankings = useMemo(
     () => buildOperationalRankings(assignments, summaries, qualityIssues),
     [assignments, summaries, qualityIssues],
+  )
+  const changedServiceIds = useMemo(
+    () => buildChangedServiceSet(services, bases, routeIndex, pinnedServices, trafficFactor),
+    [services, bases, routeIndex, pinnedServices, trafficFactor],
   )
 
   function handleSort(field: SortField) {
@@ -460,11 +476,42 @@ export default function PlannerApp() {
                 <button type="button" className={mapLayers.services ? 'active' : ''} onClick={() => toggleMapLayer('services')}>Serviços</button>
                 <button type="button" className={mapLayers.bases ? 'active' : ''} onClick={() => toggleMapLayer('bases')}>Bases</button>
                 <button type="button" className={mapLayers.heatmap ? 'active' : ''} onClick={() => toggleMapLayer('heatmap')}>Heatmap</button>
+                <button type="button" className={mapLayers.regions ? 'active' : ''} onClick={() => toggleMapLayer('regions')}>Zonas</button>
                 <button type="button" className={mapLayers.longServices ? 'active' : ''} onClick={() => toggleMapLayer('longServices')}>Longos ({longServiceCount})</button>
                 <button type="button" className={mapLayers.saturatedBases ? 'active' : ''} onClick={() => toggleMapLayer('saturatedBases')}>Saturadas</button>
                 <button type="button" className={mapLayers.outliers ? 'active' : ''} onClick={() => toggleMapLayer('outliers')}>Outliers</button>
+                <button type="button" className={mapLayers.changedServices ? 'active' : ''} onClick={() => toggleMapLayer('changedServices')}>Mudanças</button>
               </div>
             </div>
+
+            <label className="form-row">
+              Distância mínima no mapa: {mapDistanceLimit} km
+              <input type="range" min="0" max="80" step="5" value={mapDistanceLimit} onChange={(e) => setMapDistanceLimit(Number(e.target.value))} />
+            </label>
+
+            <label className="form-row">
+              Tempo mínimo no mapa: {mapTimeLimit} min
+              <input type="range" min="0" max="120" step="5" value={mapTimeLimit} onChange={(e) => setMapTimeLimit(Number(e.target.value))} />
+            </label>
+
+            <label className="form-row">
+              Linhas base-serviço
+              <select value={connectionMode} onChange={(e) => setConnectionMode(e.target.value as ConnectionMode)}>
+                <option value="off">Desligadas</option>
+                <option value="selected">Base selecionada</option>
+                <option value="long">Serviços longos</option>
+                <option value="all">Todas visíveis</option>
+              </select>
+            </label>
+
+            <label className="form-row">
+              Intensidade do heatmap
+              <select value={heatMetric} onChange={(e) => setHeatMetric(e.target.value as HeatMetric)}>
+                <option value="count">Quantidade</option>
+                <option value="distance">Distância média</option>
+                <option value="time">Tempo médio</option>
+              </select>
+            </label>
 
             <button
               type="button"
@@ -483,6 +530,14 @@ export default function PlannerApp() {
               baseColorMap={baseColorMap}
               activeBaseId={baseFilter}
               layers={mapLayers}
+              distanceLimit={mapDistanceLimit}
+              timeLimit={mapTimeLimit}
+              connectionMode={connectionMode}
+              heatMetric={heatMetric}
+              changedServiceIds={changedServiceIds}
+              onBaseSelect={(baseId) => setBaseFilter(baseId)}
+              fullscreen={mapFullscreen}
+              onToggleFullscreen={() => setMapFullscreen((value) => !value)}
             />
           </section>
 
@@ -788,13 +843,36 @@ function SortTh({ label, field, sortBy, sortDir, onSort }: {
   )
 }
 
-function PlannerMap({ services, bases, issues, baseColorMap, activeBaseId, layers }: {
+function PlannerMap({
+  services,
+  bases,
+  issues,
+  baseColorMap,
+  activeBaseId,
+  layers,
+  distanceLimit,
+  timeLimit,
+  connectionMode,
+  heatMetric,
+  changedServiceIds,
+  onBaseSelect,
+  fullscreen,
+  onToggleFullscreen,
+}: {
   services: Assignment[]
   bases: BaseSummary[]
   issues: QualityIssue[]
   baseColorMap: Map<string, string>
   activeBaseId: string
   layers: MapLayers
+  distanceLimit: number
+  timeLimit: number
+  connectionMode: ConnectionMode
+  heatMetric: HeatMetric
+  changedServiceIds: Set<number>
+  onBaseSelect: (baseId: string) => void
+  fullscreen: boolean
+  onToggleFullscreen: () => void
 }) {
   const mapElement = useRef<HTMLDivElement | null>(null)
   const map = useRef<L.Map | null>(null)
@@ -802,6 +880,8 @@ function PlannerMap({ services, bases, issues, baseColorMap, activeBaseId, layer
   const baseLayer = useRef<L.LayerGroup | null>(null)
   const issueLayer = useRef<L.LayerGroup | null>(null)
   const heatLayer = useRef<L.LayerGroup | null>(null)
+  const regionLayer = useRef<L.LayerGroup | null>(null)
+  const connectionLayer = useRef<L.LayerGroup | null>(null)
   const routeLayer = useRef<L.LayerGroup | null>(null)
   const abortRef = useRef<AbortController | null>(null)
 
@@ -819,24 +899,40 @@ function PlannerMap({ services, bases, issues, baseColorMap, activeBaseId, layer
       chunkedLoading: true,
       showCoverageOnHover: false,
       spiderfyOnMaxZoom: true,
+      iconCreateFunction: (cluster) => {
+        const count = cluster.getChildCount()
+        return L.divIcon({
+          html: `<div class="custom-cluster"><strong>${count}</strong></div>`,
+          className: '',
+          iconSize: [42, 42],
+        })
+      },
     })
     map.current.addLayer(clusterGroup.current)
 
     baseLayer.current = L.layerGroup().addTo(map.current)
     issueLayer.current = L.layerGroup().addTo(map.current)
     heatLayer.current = L.layerGroup().addTo(map.current)
+    regionLayer.current = L.layerGroup().addTo(map.current)
+    connectionLayer.current = L.layerGroup().addTo(map.current)
     routeLayer.current = L.layerGroup().addTo(map.current)
 
     map.current.on('click', () => routeLayer.current?.clearLayers())
   }, [])
 
   useEffect(() => {
-    if (!map.current || !clusterGroup.current || !baseLayer.current || !issueLayer.current || !heatLayer.current || !routeLayer.current) return
+    setTimeout(() => map.current?.invalidateSize(), 80)
+  }, [fullscreen])
+
+  useEffect(() => {
+    if (!map.current || !clusterGroup.current || !baseLayer.current || !issueLayer.current || !heatLayer.current || !regionLayer.current || !connectionLayer.current || !routeLayer.current) return
 
     clusterGroup.current.clearLayers()
     baseLayer.current.clearLayers()
     issueLayer.current.clearLayers()
     heatLayer.current.clearLayers()
+    regionLayer.current.clearLayers()
+    connectionLayer.current.clearLayers()
     routeLayer.current.clearLayers()
     abortRef.current?.abort()
 
@@ -844,34 +940,78 @@ function PlannerMap({ services, bases, issues, baseColorMap, activeBaseId, layer
       [DF_BOUNDS.minLat, DF_BOUNDS.minLng],
       [DF_BOUNDS.maxLat, DF_BOUNDS.maxLng],
     ])
+    const visibleServices = services.filter((service) => {
+      if (distanceLimit && service.distanceKm < distanceLimit) return false
+      if (timeLimit && service.durationMin < timeLimit) return false
+      if (activeBaseId !== 'all' && service.baseId !== activeBaseId) return false
+      if (layers.changedServices && !changedServiceIds.has(service.id)) return false
+      return true
+    })
+    const baseById = new Map(bases.map((base) => [base.id, base]))
 
     if (layers.heatmap) {
-      buildHeatCells(services).forEach((cell) => {
-        const intensity = Math.min(1, cell.count / 80)
+      buildHeatCells(visibleServices, heatMetric).forEach((cell) => {
+        const intensity = Math.min(1, cell.score / cell.maxScore)
         L.circleMarker([cell.lat, cell.lng], {
           radius: 10 + intensity * 28,
           color: '#145f3d',
-          fillColor: '#23b36c',
+          fillColor: heatMetric === 'count' ? '#23b36c' : heatMetric === 'distance' ? '#f0a22e' : '#d94832',
           fillOpacity: 0.12 + intensity * 0.36,
           weight: 1,
         })
-          .bindTooltip(`${cell.count.toLocaleString('pt-BR')} serviços nesta região`, { sticky: true })
+          .bindTooltip(`${cell.count.toLocaleString('pt-BR')} serviços · ${formatNumber(cell.avgDistance)} km médio · ${Math.round(cell.avgTime)} min médio`, { sticky: true })
           .addTo(heatLayer.current!)
       })
     }
 
+    if (layers.regions) {
+      buildHeatCells(visibleServices, 'count').slice(0, 120).forEach((cell) => {
+        const intensity = Math.min(1, cell.count / 60)
+        L.rectangle([
+          [cell.lat - 0.009, cell.lng - 0.009],
+          [cell.lat + 0.009, cell.lng + 0.009],
+        ], {
+          color: '#2b6f4b',
+          fillColor: '#7ad89f',
+          fillOpacity: 0.08 + intensity * 0.24,
+          weight: 1,
+        })
+          .bindTooltip(`Zona operacional · ${cell.count.toLocaleString('pt-BR')} serviços`, { sticky: true })
+          .addTo(regionLayer.current!)
+      })
+    }
+
+    if (connectionMode !== 'off') {
+      const lineServices = visibleServices.filter((service) => {
+        if (connectionMode === 'selected') return activeBaseId !== 'all' && service.baseId === activeBaseId
+        if (connectionMode === 'long') return service.distanceKm > 30 || service.durationMin > 45
+        return true
+      }).slice(0, connectionMode === 'all' ? 600 : 1200)
+      lineServices.forEach((service) => {
+        const base = baseById.get(service.baseId)
+        if (!base) return
+        const color = baseColorMap.get(service.baseId) ?? '#226b49'
+        L.polyline([[service.lat, service.lng], [base.lat, base.lng]], {
+          color,
+          weight: service.distanceKm > 30 || service.durationMin > 45 ? 1.8 : 1,
+          opacity: connectionMode === 'all' ? 0.16 : 0.28,
+        }).addTo(connectionLayer.current!)
+      })
+    }
+
     // Serviços — cor por base, agrupados em cluster
-    if (layers.services) services.forEach((service) => {
+    if (layers.services) visibleServices.forEach((service) => {
       const isLong = service.distanceKm > 30 || service.durationMin > 45
       if (layers.longServices && !isLong) return
-      const color = isLong ? '#d94832' : baseColorMap.get(service.baseId) ?? '#2ad184'
+      const isChanged = changedServiceIds.has(service.id)
+      const color = isChanged && layers.changedServices ? '#111827' : isLong ? '#d94832' : baseColorMap.get(service.baseId) ?? '#2ad184'
       const icon = L.divIcon({
         className: '',
-        html: `<div class="service-marker-dot ${isLong ? 'long' : ''}" style="background:${color}"></div>`,
-        iconSize: [isLong ? 12 : 8, isLong ? 12 : 8],
-        iconAnchor: [isLong ? 6 : 4, isLong ? 6 : 4],
+        html: `<div class="service-marker-dot ${isLong ? 'long' : ''} ${isChanged ? 'changed' : ''}" style="background:${color}"></div>`,
+        iconSize: [isLong || isChanged ? 12 : 8, isLong || isChanged ? 12 : 8],
+        iconAnchor: [isLong || isChanged ? 6 : 4, isLong || isChanged ? 6 : 4],
       })
-      L.marker([service.lat, service.lng], { icon })
+      L.marker([service.lat, service.lng], { icon, keyboard: false } as L.MarkerOptions)
         .bindTooltip(
           `${service.description}<br>${service.baseName}<br>${formatNumber(service.distanceKm)} km · ${Math.round(service.durationMin)} min`,
           { sticky: true },
@@ -906,6 +1046,10 @@ function PlannerMap({ services, bases, issues, baseColorMap, activeBaseId, layer
           `<strong>${base.name}</strong><br>${base.assigned.toLocaleString('pt-BR')} serviços · ${formatNumber(base.avgKm)} km/serv<br>${formatPercent(base.saturation * 100)} saturação`,
           { sticky: true },
         )
+        .on('click', (event) => {
+          L.DomEvent.stopPropagation(event)
+          onBaseSelect(isActive ? 'all' : base.id)
+        })
         .addTo(baseLayer.current!)
     })
 
@@ -925,7 +1069,7 @@ function PlannerMap({ services, bases, issues, baseColorMap, activeBaseId, layer
     })
 
     if (bounds.isValid()) map.current.fitBounds(bounds.pad(0.08), { maxZoom: 12 })
-  }, [activeBaseId, baseColorMap, bases, issues, layers, services])
+  }, [activeBaseId, baseColorMap, bases, changedServiceIds, connectionMode, distanceLimit, heatMetric, issues, layers, onBaseSelect, services, timeLimit])
 
   async function showOsrmRoute(service: Assignment, currentBases: BaseSummary[]) {
     if (!map.current || !routeLayer.current) return
@@ -974,9 +1118,41 @@ function PlannerMap({ services, bases, issues, baseColorMap, activeBaseId, layer
     }
   }
 
+  const selectedBase = activeBaseId === 'all' ? null : bases.find((base) => base.id === activeBaseId) ?? null
+  const visibleCount = services.filter((service) => {
+    if (distanceLimit && service.distanceKm < distanceLimit) return false
+    if (timeLimit && service.durationMin < timeLimit) return false
+    if (activeBaseId !== 'all' && service.baseId !== activeBaseId) return false
+    if (layers.changedServices && !changedServiceIds.has(service.id)) return false
+    return true
+  }).length
+
   return (
-    <div className="leaflet-map-shell">
+    <div className={`leaflet-map-shell ${fullscreen ? 'fullscreen' : ''}`}>
       <div ref={mapElement} className="leaflet-map" />
+      <button type="button" className="map-fullscreen-button" onClick={onToggleFullscreen}>
+        {fullscreen ? 'Sair da tela cheia' : 'Tela cheia'}
+      </button>
+      {selectedBase && (
+        <aside className="map-base-summary">
+          <button type="button" onClick={() => onBaseSelect('all')}>×</button>
+          <span>Base selecionada</span>
+          <strong>{selectedBase.name}</strong>
+          <small>{selectedBase.assigned.toLocaleString('pt-BR')} serviços · {formatNumber(selectedBase.avgKm)} km/serv · {Math.round(selectedBase.avgMin)} min/serv</small>
+          <em>{formatPercent(selectedBase.saturation * 100)} saturação</em>
+        </aside>
+      )}
+      {layers.outliers && (
+        <aside className="map-outlier-list">
+          <strong>Outliers</strong>
+          {issues.slice(0, 6).map((issue) => (
+            <button key={issue.id} type="button" onClick={() => map.current?.setView([issue.lat, issue.lng], 14)}>
+              <span>{issue.type}</span>
+              <small>{issue.description}</small>
+            </button>
+          ))}
+        </aside>
+      )}
       <div className="map-legend">
         {bases.map((base) => (
           <div key={base.id} className="legend-item">
@@ -988,9 +1164,12 @@ function PlannerMap({ services, bases, issues, baseColorMap, activeBaseId, layer
           <span className="legend-dot" style={{ background: '#46ef98', border: '2px solid #071f17' }} />
           <span>Base</span>
         </div>
+        {layers.longServices && <div className="legend-item"><span className="legend-dot long-legend" /><span>Serviço longo</span></div>}
+        {layers.changedServices && <div className="legend-item"><span className="legend-dot changed-legend" /><span>Muda de base</span></div>}
+        {layers.heatmap && <div className="legend-item"><span className="legend-dot heat-legend" /><span>Heatmap por {heatMetric === 'count' ? 'quantidade' : heatMetric === 'distance' ? 'distância' : 'tempo'}</span></div>}
       </div>
       <div className="map-caption">
-        OpenStreetMap · {services.length.toLocaleString('pt-BR')} serviços · clique num ponto para ver a rota viária
+        OpenStreetMap · {visibleCount.toLocaleString('pt-BR')} serviços visíveis · clique numa base para filtrar
       </div>
     </div>
   )
@@ -1182,20 +1361,42 @@ function buildOperationalRankings(assignments: Assignment[], summaries: BaseSumm
   }
 }
 
-function buildHeatCells(services: Assignment[]) {
-  const cells = new Map<string, { latSum: number; lngSum: number; count: number }>()
+function buildChangedServiceSet(
+  services: ServiceRow[],
+  bases: BaseRow[],
+  routeIndex: RouteIndex | null,
+  pinnedServices: Record<number, string>,
+  trafficFactor: number,
+) {
+  const distance = assignServices(services, bases, routeIndex, 'distance', pinnedServices, trafficFactor)
+  const capacity = assignServices(services, bases, routeIndex, 'capacity', pinnedServices, trafficFactor)
+  const capacityById = new Map(capacity.map((item) => [item.id, item.baseId]))
+  return new Set(distance.filter((item) => capacityById.get(item.id) !== item.baseId).map((item) => item.id))
+}
+
+function buildHeatCells(services: Assignment[], metric: HeatMetric) {
+  const cells = new Map<string, { latSum: number; lngSum: number; distanceSum: number; timeSum: number; count: number }>()
   services.forEach((service) => {
     const latKey = Math.round(service.lat / 0.015)
     const lngKey = Math.round(service.lng / 0.015)
     const key = `${latKey}:${lngKey}`
-    const cell = cells.get(key) ?? { latSum: 0, lngSum: 0, count: 0 }
+    const cell = cells.get(key) ?? { latSum: 0, lngSum: 0, distanceSum: 0, timeSum: 0, count: 0 }
     cell.latSum += service.lat
     cell.lngSum += service.lng
+    cell.distanceSum += service.distanceKm
+    cell.timeSum += service.durationMin
     cell.count += 1
     cells.set(key, cell)
   })
-  return [...cells.values()]
-    .map((cell) => ({ lat: cell.latSum / cell.count, lng: cell.lngSum / cell.count, count: cell.count }))
+  const mapped = [...cells.values()].map((cell) => {
+    const avgDistance = cell.distanceSum / cell.count
+    const avgTime = cell.timeSum / cell.count
+    const score = metric === 'count' ? cell.count : metric === 'distance' ? avgDistance : avgTime
+    return { lat: cell.latSum / cell.count, lng: cell.lngSum / cell.count, count: cell.count, avgDistance, avgTime, score, maxScore: 1 }
+  })
+  const maxScore = Math.max(1, ...mapped.map((cell) => cell.score))
+  return mapped
+    .map((cell) => ({ ...cell, maxScore }))
     .sort((a, b) => b.count - a.count)
     .slice(0, 220)
 }

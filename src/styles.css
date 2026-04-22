@@ -1081,6 +1081,11 @@ body {
   font-weight: 700;
 }
 
+.form-row input[type="range"] {
+  width: 100%;
+  accent-color: #2fb86f;
+}
+
 .base-select.pinned {
   background: #eefaf3;
   border-color: #2fb86f;
@@ -1221,6 +1226,149 @@ body {
 .service-marker-dot.long {
   border: 2px solid #fff;
   box-shadow: 0 0 0 2px rgba(217, 72, 50, 0.35), 0 2px 8px rgba(0, 0, 0, 0.35);
+}
+
+.service-marker-dot.changed {
+  border: 2px solid #facc15;
+  box-shadow: 0 0 0 2px rgba(17, 24, 39, 0.36), 0 2px 8px rgba(0, 0, 0, 0.35);
+}
+
+.custom-cluster {
+  width: 42px;
+  height: 42px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  background: #174f37;
+  color: #fff;
+  border: 3px solid rgba(255, 255, 255, 0.9);
+  box-shadow: 0 8px 20px rgba(15, 40, 28, 0.28);
+}
+
+.custom-cluster strong {
+  font-size: 0.82rem;
+}
+
+.leaflet-map-shell.fullscreen {
+  position: fixed;
+  inset: 14px;
+  z-index: 2000;
+  height: auto;
+  min-height: 0;
+  border-radius: 8px;
+  overflow: hidden;
+  box-shadow: 0 24px 90px rgba(0, 0, 0, 0.35);
+}
+
+.leaflet-map-shell.fullscreen .leaflet-map {
+  height: 100%;
+}
+
+.map-fullscreen-button {
+  position: absolute;
+  z-index: 650;
+  top: 12px;
+  right: 12px;
+  min-height: 36px;
+  border: 1px solid #b9c8c0;
+  border-radius: 8px;
+  background: #fff;
+  color: #173024;
+  font-weight: 900;
+  padding: 0 12px;
+  box-shadow: 0 10px 26px rgba(16, 30, 22, 0.16);
+}
+
+.map-base-summary,
+.map-outlier-list {
+  position: absolute;
+  z-index: 640;
+  top: 58px;
+  right: 12px;
+  width: min(300px, calc(100% - 24px));
+  background: #fff;
+  border: 1px solid #b9c8c0;
+  border-radius: 8px;
+  box-shadow: 0 14px 34px rgba(16, 30, 22, 0.16);
+  padding: 12px;
+  display: grid;
+  gap: 5px;
+}
+
+.map-base-summary button {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 28px;
+  height: 28px;
+  border: 0;
+  border-radius: 50%;
+  background: #edf2ee;
+  color: #173024;
+  font-size: 1.1rem;
+}
+
+.map-base-summary span,
+.map-outlier-list strong {
+  color: #5b6b61;
+  font-weight: 900;
+  font-size: 0.78rem;
+  text-transform: uppercase;
+}
+
+.map-base-summary strong {
+  color: #17211c;
+  padding-right: 30px;
+}
+
+.map-base-summary small,
+.map-base-summary em {
+  color: #5b6b61;
+  font-style: normal;
+  font-weight: 700;
+}
+
+.map-outlier-list {
+  top: 58px;
+  left: 12px;
+  right: auto;
+  max-height: 260px;
+  overflow: auto;
+}
+
+.map-outlier-list button {
+  border: 1px solid #edf2ee;
+  border-radius: 8px;
+  background: #fffaf0;
+  color: #17211c;
+  padding: 8px;
+  text-align: left;
+  display: grid;
+  gap: 2px;
+}
+
+.map-outlier-list span {
+  font-weight: 900;
+}
+
+.map-outlier-list small {
+  color: #5b6b61;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.long-legend {
+  background: #d94832;
+}
+
+.changed-legend {
+  background: #111827;
+  border: 2px solid #facc15;
+}
+
+.heat-legend {
+  background: #23b36c;
 }
 
 .source-pill.osrm {
